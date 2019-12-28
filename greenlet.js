@@ -5,10 +5,24 @@
  *  @public
  */
 export default function greenlet(asyncFunction, options = {}) {
+	/* global globalThis, self, window, global */
 	const defaults = {
 		useTransferables: true
 	};
 	const { useTransferables } = { ...defaults, ...options };
+	const existsOnGlobal = (prop) => {
+		if(typeof globalThis !== 'undefined') { return globalThis[prop] }
+		if(typeof self !== 'undefined') { return self[prop] }
+		if(typeof window !== 'undefined') { return window[prop] }
+		if(typeof global !== 'undefined') { return global[prop] }
+		throw new Error("this environment doesn't support any of the known globals");
+	}
+	const getTransferables = d => !useTransferables ? [] : d.filter(x => (
+		(existsOnGlobal('ArrayBuffer') && x instanceof ArrayBuffer) ||
+		(existsOnGlobal('MessagePort') && x instanceof MessagePort) ||
+		(existsOnGlobal('ImageBitmap') && x instanceof ImageBitmap)
+	));
+	
 	// A simple counter is used to generate worker-global unique ID's for RPC:
 	let promiseIds = 0;
 
@@ -19,13 +33,8 @@ export default function greenlet(asyncFunction, options = {}) {
 	const promises = {};
 
 	// Use a data URI for the worker's src. It inlines the target function and an RPC handler:
-	const script = `$$=${asyncFunction};USET=${useTransferables};GENS={};onmessage=` + (e => {
-		/* global $$, GENS, USET */
-		const getTransferables = d => !USET ? [] : d.filter(x => (
-			(x instanceof ArrayBuffer) ||
-			(x instanceof MessagePort) ||
-			(self.ImageBitmap && x instanceof ImageBitmap)
-		));
+	const script = `$$=${asyncFunction};useTransferables=${useTransferables};existsOnGlobal=${existsOnGlobal};GETT=${getTransferables};GENS={};onmessage=` + (e => {
+		/* global $$, GENS, GETT */
 		const [promiseID, args, status, genID] = e.data;
 		Promise.resolve(args).then(
 			// either apply the async/generator/async generator function or use a generator function's iterator
@@ -42,14 +51,14 @@ export default function greenlet(asyncFunction, options = {}) {
 						return postMessage([promiseID, 0, { value: undefined, done: false }]);
 					}
 					// yield the value
-					postMessage([promiseID, 0, d], getTransferables([d.value]));
+					postMessage([promiseID, 0, d], GETT([d.value]));
 					if (d.done) {
 						GENS[promiseID] = null;
 					}
 				}
 				else {
 					// here we know it's just an async function that needs it's return value.
-					postMessage([promiseID, 0, d], getTransferables([d]));
+					postMessage([promiseID, 0, d], GETT([d]));
 				}
 			},
 			// error handler - callback(id, ERROR(1), error)
@@ -80,15 +89,11 @@ export default function greenlet(asyncFunction, options = {}) {
 
 		// Send an RPC call to the worker - call(id, params)
 		// The filter is to provide a list of transferables to send zero-copy
-		worker.postMessage([promiseIds, args, status, genID], !useTransferables ? [] : args.filter(x => (
-			(x instanceof ArrayBuffer) ||
-			(x instanceof MessagePort) ||
-			(self.ImageBitmap && x instanceof ImageBitmap)
-		)));
+		worker.postMessage([promiseIds, args, status, genID], getTransferables(args));
 	});
 	// if it's a generator or async generator function return a async generator function.
 	if (asyncFunction.constructor.name === 'AsyncGeneratorFunction' || asyncFunction.constructor.name === 'GeneratorFunction') {
-		return async function* workerPassthrough(...args) {
+		return async function* workerPassthrough (...args) {
 			const genID = ++genIds;
 			try {
 				let result = await passMessagePromise(args, 0, genID);
