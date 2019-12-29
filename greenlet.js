@@ -1,3 +1,4 @@
+// @deno-types="./index.d.ts"
 /** Move an async function into its own thread.
  *  @param {Function} asyncFunction  An (async) or async generator function to run in a Worker.
  *  @param {{useTransferables?: boolean}} options
